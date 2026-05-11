@@ -5,6 +5,7 @@ import (
 	"GopherAI/common/code"
 	"GopherAI/dao/session"
 	"GopherAI/model"
+	"GopherAI/service/summary"
 	"context"
 	"log"
 	"net/http"
@@ -57,8 +58,8 @@ func CreateSessionAndSendMessage(userName string, userQuestion string, modelType
 		return "", "", code.AIModelFail
 	}
 
-	//3：生成AI回复
-	aiResponse, err_ := helper.GenerateResponse(userName, ctx, userQuestion)
+	//3：生成AI回复（带记忆压缩）
+	aiResponse, err_ := GenerateResponseWithSummary(helper, userName, userQuestion)
 	if err_ != nil {
 		log.Println("CreateSessionAndSendMessage GenerateResponse error:", err_)
 		return "", "", code.AIModelFail
@@ -113,7 +114,8 @@ func StreamMessageToExistingSession(userName string, sessionID string, userQuest
 		log.Println("[SSE] Flushed")
 	}
 
-	_, err_ := helper.StreamResponse(userName, ctx, cb, userQuestion)
+	// 流式响应（带记忆压缩）
+	_, err_ := StreamResponseWithSummary(helper, userName, userQuestion, cb)
 	if err_ != nil {
 		log.Println("StreamMessageToExistingSession StreamResponse error:", err_)
 		return code.AIModelFail
@@ -157,8 +159,8 @@ func ChatSend(userName string, sessionID string, userQuestion string, modelType 
 		return "", code.AIModelFail
 	}
 
-	//2：生成AI回复
-	aiResponse, err_ := helper.GenerateResponse(userName, ctx, userQuestion)
+	//2：生成AI回复（带记忆压缩）
+	aiResponse, err_ := GenerateResponseWithSummary(helper, userName, userQuestion)
 	if err_ != nil {
 		log.Println("ChatSend GenerateResponse error:", err_)
 		return "", code.AIModelFail
@@ -193,4 +195,50 @@ func GetChatHistory(userName string, sessionID string) ([]model.History, code.Co
 func ChatStreamSend(userName string, sessionID string, userQuestion string, modelType string, writer http.ResponseWriter) code.Code {
 
 	return StreamMessageToExistingSession(userName, sessionID, userQuestion, modelType, writer)
+}
+
+// ==================== 记忆压缩相关 ====================
+
+// StreamCallback 流式回调函数类型
+
+// GenerateResponseWithSummary 生成回复（带记忆压缩）
+func GenerateResponseWithSummary(helper *aihelper.AIHelper, userName string, userQuestion string) (*model.Message, error) {
+	// 1. 检查是否需要总结（在添加用户消息之前）
+	_, _ = summary.PerformSummarize(helper, userName)
+
+	// 2. 添加用户消息
+	helper.AddMessage(userQuestion, userName, true, true)
+
+	// 3. 构建上下文（带摘要）
+	sessionID := helper.GetSessionID()
+	summaries := summary.GetSessionSummaries(sessionID)
+
+	// 4. 如果有历史摘要，使用带摘要的上下文
+	if len(summaries) > 0 {
+		return helper.GenerateResponseWithSummaries(userName, ctx, userQuestion, summaries)
+	}
+
+	// 5. 没有摘要，正常生成
+	return helper.GenerateResponse(userName, ctx, userQuestion)
+}
+
+// StreamResponseWithSummary 流式生成回复（带记忆压缩）
+func StreamResponseWithSummary(helper *aihelper.AIHelper, userName string, userQuestion string, cb aihelper.StreamCallback) (*model.Message, error) {
+	// 1. 检查是否需要总结（在添加用户消息之前）
+	_, _ = summary.PerformSummarize(helper, userName)
+
+	// 2. 添加用户消息
+	helper.AddMessage(userQuestion, userName, true, true)
+
+	// 3. 构建上下文（带摘要）
+	sessionID := helper.GetSessionID()
+	summaries := summary.GetSessionSummaries(sessionID)
+
+	// 4. 如果有历史摘要，使用带摘要的上下文
+	if len(summaries) > 0 {
+		return helper.StreamResponseWithSummaries(userName, ctx, userQuestion, cb, summaries)
+	}
+
+	// 5. 没有摘要，正常流式生成
+	return helper.StreamResponse(userName, ctx, cb, userQuestion)
 }
